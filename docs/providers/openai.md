@@ -917,19 +917,90 @@ compatibility fallback when the shared
     Set the model explicitly to `gpt-realtime-2.1-mini` when you prefer the
     smaller, lower-cost Realtime 2.1 variant.
 
-    <Note>
-    **GPT-Live (upcoming).** OpenAI's full-duplex `gpt-live-1` and
-    `gpt-live-1-mini` models replaced ChatGPT voice mode in July 2026; the
-    developer API is rolling out to early-access organizations. OpenClaw
-    recognizes the model family but does not run it yet: GPT-Live sessions are
-    WebRTC-only, own their turn-taking (no VAD), and delegate agent work
-    through a handoff event protocol that OpenClaw's realtime transports do
-    not implement yet. Configuring a `gpt-live-*` model fails closed with
-    guidance on both the WebSocket bridge and Talk browser sessions instead of
-    silently connecting audio without agent access. API access is also gated
-    per OpenAI organization during early access. Keep `gpt-realtime-2.1` (the
-    default) until GPT-Live support lands.
-    </Note>
+    #### GPT-Live browser Talk
+
+    GPT-Live is supported for browser Talk WebRTC sessions using a ChatGPT
+    OAuth subscription profile. The complete path was verified on 2026-07-28
+    with a ChatGPT Pro account: call creation returned `201 Created`, and the
+    authenticated sideband emitted `session.started` for the same `rtc_*` call.
+
+    Use `gpt-live-1-codex` (recommended) or
+    `gpt-live-1-boulder-alpha`. The values `gpt-live-1` and
+    `gpt-live-1-mini` are not valid on this route. Opt in explicitly with
+    `talk.realtime.model`; `gpt-realtime-2.1` remains the GA default.
+
+    GPT-Live accepts these voices: `alloy`, `ash`, `ballad`, `cedar`, `coral`,
+    `echo`, `marin`, `sage`, `shimmer`, and `verse`. OpenClaw defaults to
+    `marin` and maps unknown or unsupported configured voices back to it.
+
+    ```json5
+    {
+      talk: {
+        realtime: {
+          provider: "openai",
+          model: "gpt-live-1-codex",
+          transport: "webrtc",
+        },
+      },
+    }
+    ```
+
+    <Warning>
+    Platform API keys do not work for GPT-Live yet. They return
+    `400 model_not_found` because `/v1/live` API-key access is waitlist-gated.
+    Use a ChatGPT OAuth profile today, or request Platform access with the
+    [GPT-Live API access form](https://openai.com/form/gpt-live-1-in-the-api/).
+    </Warning>
+
+    A `403 Voice session access denied` response is overloaded and does not by
+    itself prove an account entitlement problem. First verify the model and
+    voice against the accepted lists above, then verify that the selected
+    ChatGPT OAuth profile and `chatgpt-account-id` belong to the same account.
+
+    GPT-Live remains limited to browser Talk WebRTC sessions. Voice
+    Call/telephony, Gateway relay, provider WebSocket transports, and Android
+    are unsupported. The Gateway owns the authenticated sideband and routes
+    delegated work through the configured OpenClaw agent; the browser never
+    receives the OAuth token.
+
+    The canonical OpenClaw path creates the call on `api.openai.com` and joins
+    its sideband there. The legacy backend-created call path tracked in
+    [openai/codex#35094](https://github.com/openai/codex/issues/35094) has
+    returned `404 call_id_not_found` when its call ids are joined through the
+    `api.openai.com` sideband; retest that separate path when diagnosing an
+    upstream client comparison.
+
+    Maintainers can exercise OpenClaw's complete OAuth path with the opt-in
+    live test. It skips when no Codex/ChatGPT OAuth credential is available and
+    never prints token material:
+
+    ```bash
+    OPENCLAW_LIVE_TEST=1 OPENCLAW_LIVE_GPT_LIVE=1 node scripts/run-vitest.mjs run --config test/vitest/vitest.live.config.ts extensions/openai/realtime-quicksilver.live.test.ts
+    ```
+
+    #### Compare with OpenAI's client
+
+    The bundled Codex app-server provides a roughly 30-second diagnostic oracle
+    when comparing OpenClaw signaling with OpenAI's client. Start it from
+    ChatGPT.app:
+
+    ```bash
+    /Applications/ChatGPT.app/Contents/Resources/codex app-server
+    ```
+
+    Send these JSON-RPC messages one line at a time. Replace `<thread-id>` with
+    the id returned by `thread/start`, and replace `<offer>` with a real browser
+    `RTCPeerConnection` SDP offer:
+
+    ```json
+    {"method":"initialize","id":1,"params":{"clientInfo":{"name":"openclaw-gpt-live-probe","title":"OpenClaw GPT-Live probe","version":"1.0.0"},"capabilities":{"experimentalApi":true}}}
+    {"method":"thread/start","id":2,"params":{"ephemeral":true,"config":{"features.realtime_conversation":true}}}
+    {"method":"thread/realtime/start","id":3,"params":{"threadId":"<thread-id>","version":"v3","outputModality":"audio","transport":{"type":"webrtc","sdp":"<offer>"}}}
+    ```
+
+    A working call emits `thread/realtime/sdp`. If it emits
+    `thread/realtime/error`, compare the upstream error with OpenClaw's
+    diagnostic before changing auth or transport code.
 
     <Note>
     Backend OpenAI realtime bridges use the GA Realtime WebSocket session
@@ -947,17 +1018,19 @@ compatibility fallback when the shared
     </Note>
 
     <Note>
-    Control UI Talk uses OpenAI browser realtime sessions with a Gateway-
-    minted ephemeral client secret and a direct browser WebRTC SDP exchange
-    against the OpenAI Realtime API when using Platform credentials. The
-    Gateway mints that client secret with the selected `openai` credential.
+    Control UI Talk uses OpenAI browser WebRTC sessions. GA
+    `gpt-realtime-*` models use a Gateway-minted ephemeral client secret and a
+    direct browser SDP exchange when Platform credentials are available.
     Configured realtime keys, API-key profiles, and `OPENAI_API_KEY` use that
-    path in that order. When none exists and the bundled Codex runtime is
-    active, browser WebRTC falls back to the logged-in Codex app-server
-    automatically. Gateway relay and Voice Call backend realtime WebSocket
-    bridges continue to use Platform credentials. The Codex route keeps
+    path in that order. Without a Platform credential, GA models can fall back
+    to the bundled Codex app-server route when it is active. GPT-Live instead
+    uses the native Gateway offer broker described above. GPT-Live prefers
+    ChatGPT OAuth when both auth modes are configured; Platform API-key access
+    remains waitlist-gated.
+    Gateway relay and Voice Call backend realtime WebSocket bridges continue to
+    require Platform credentials and a GA model. The Codex fallback keeps
     Codex's native realtime prompt, model selection, and agent handoff; it does
-    not accept the direct Platform model/tool/camera controls.
+    not accept direct Platform model/tool/camera controls.
     Maintainer live verification is available with
     `OPENAI_API_KEY=... GEMINI_API_KEY=... node --import tsx scripts/dev/realtime-talk-live-smoke.ts`;
     the OpenAI legs verify both the backend WebSocket bridge and the browser
