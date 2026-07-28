@@ -28,6 +28,7 @@ import {
 } from "./session-accessor.sqlite-entry-store.js";
 import { emitCommittedSessionIdentityDiff } from "./session-accessor.sqlite-identity.js";
 import {
+  readSqliteTranscriptEventRows,
   readSqliteTranscriptSnapshot,
   readTranscriptEventJsonSetInTransaction,
   type SqliteTranscriptSnapshotRow,
@@ -42,6 +43,10 @@ import {
   toDatabaseOptions,
   type ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope.js";
+import {
+  readTranscriptMessageEventCount,
+  readTranscriptMirrorFacts,
+} from "./session-accessor.sqlite-transcript-mirror.js";
 import {
   advanceTranscriptMutationAtInTransaction,
   touchTranscriptMutationInTransaction,
@@ -108,6 +113,16 @@ type SqliteTranscriptWriteLockContext = {
   appendMessage: <TMessage>(
     options: TranscriptMessageAppendOptions<TMessage>,
   ) => Promise<TranscriptMessageAppendResult<TMessage> | undefined>;
+  appendMessageWithMessageCount: <TMessage>(
+    options: TranscriptMessageAppendOptions<TMessage>,
+  ) => Promise<{
+    messageCount: number;
+    result: TranscriptMessageAppendResult<TMessage> | undefined;
+  }>;
+  readMessageFacts: (params: { idempotencyKeys: readonly string[] }) => Promise<{
+    existingIdempotencyKeys: Set<string>;
+    messagesByIdempotencyKey: Map<string, unknown>;
+  }>;
   readEvents: () => Promise<TranscriptEvent[]>;
   replaceEvents: (events: readonly TranscriptEvent[]) => Promise<void>;
 };
@@ -154,13 +169,13 @@ export async function trimSqliteTranscriptForManualCompact(
   const resolved = resolveSqliteTranscriptScope(scope);
   return await runExclusiveSqliteSessionWrite(resolved, async () => {
     const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
-    const snapshot = readSqliteTranscriptSnapshot(database, resolved.sessionId);
+    const snapshotRows = readSqliteTranscriptEventRows(database, resolved.sessionId);
     const sessionSnapshot = readSqliteSessionEntrySelectionSnapshot(
       database,
       resolved.sessionKey,
       true,
     );
-    const lines = snapshot.rows.map((row) => row.eventJson);
+    const lines = snapshotRows.map((row) => row.eventJson);
     const retainedLines = selectRetainedLines(lines);
     if (!retainedLines) {
       return { trimmed: false };
@@ -182,7 +197,7 @@ export async function trimSqliteTranscriptForManualCompact(
     let previousIdentity = new Map<string, SessionEntry>();
     let currentIdentity = new Map<string, SessionEntry>();
     runOpenClawAgentWriteTransaction((writeDatabase) => {
-      assertSqliteTranscriptSnapshotUnchanged(writeDatabase, resolved.sessionId, snapshot.rows);
+      assertSqliteTranscriptSnapshotUnchanged(writeDatabase, resolved.sessionId, snapshotRows);
       const freshSessionSnapshot = readSqliteSessionEntrySelectionSnapshot(
         writeDatabase,
         resolved.sessionKey,
@@ -508,6 +523,8 @@ export async function withSqliteTranscriptWriteLock<T>(
         transcriptSnapshot = { kind: "current", rows: snapshot.rows };
         return snapshot.events;
       },
+      readMessageFacts: async (params) =>
+        readTranscriptMirrorFacts(database, resolved.sessionId, params),
       replaceEvents: async (events) => {
         if (transcriptSnapshot?.kind === "stale") {
           throw new SqliteTranscriptMutationConflictError(resolved.sessionId);
@@ -524,7 +541,7 @@ export async function withSqliteTranscriptWriteLock<T>(
             );
           }
           replaceSqliteTranscriptEventsInTransaction(writeDatabase, resolved, events);
-          return readSqliteTranscriptSnapshot(writeDatabase, resolved.sessionId).rows;
+          return readSqliteTranscriptEventRows(writeDatabase, resolved.sessionId);
         }, toDatabaseOptions(resolved));
         transcriptSnapshot = { kind: "current", rows: nextSnapshot };
       },
@@ -546,13 +563,25 @@ export async function withSqliteTranscriptWriteLock<T>(
             nextSnapshotState = snapshotStillCurrent
               ? {
                   kind: "current",
-                  rows: readSqliteTranscriptSnapshot(writeDatabase, resolved.sessionId).rows,
+                  rows: readSqliteTranscriptEventRows(writeDatabase, resolved.sessionId),
                 }
               : { kind: "stale" };
           }
         }, toDatabaseOptions(resolved));
         transcriptSnapshot = nextSnapshotState;
         return result as TranscriptMessageAppendResult<typeof options.message> | undefined;
+      },
+      appendMessageWithMessageCount: async (options) => {
+        let result: TranscriptMessageAppendResult<unknown> | undefined;
+        let messageCount = 0;
+        runOpenClawAgentWriteTransaction((writeDatabase) => {
+          result = appendSqliteTranscriptMessageInTransaction(writeDatabase, resolved, options);
+          messageCount = readTranscriptMessageEventCount(writeDatabase, resolved.sessionId);
+        }, toDatabaseOptions(resolved));
+        return {
+          messageCount,
+          result: result as TranscriptMessageAppendResult<typeof options.message> | undefined,
+        };
       },
     });
   });
@@ -587,7 +616,7 @@ function isSqliteTranscriptSnapshotUnchanged(
   sessionId: string,
   expected: readonly SqliteTranscriptSnapshotRow[],
 ): boolean {
-  const current = readSqliteTranscriptSnapshot(database, sessionId).rows;
+  const current = readSqliteTranscriptEventRows(database, sessionId);
   return (
     current.length === expected.length &&
     current.every(

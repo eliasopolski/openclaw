@@ -20,6 +20,7 @@ import {
   type SessionTranscriptRawDeltaLimits,
   type SessionTranscriptRawDeltaResult,
   type SessionTranscriptVisibleMessageDeltaLimits,
+  type SessionTranscriptWriteLockAccessorContext,
 } from "../config/sessions/session-accessor.js";
 import { resolveMirroredTranscriptText } from "../config/sessions/transcript-mirror.js";
 import {
@@ -164,6 +165,20 @@ export type SessionTranscriptWriteLockContext = {
   publishUpdate: (update?: TranscriptUpdatePayload) => Promise<void>;
   readEvents: () => Promise<SessionTranscriptEvent[]>;
   target: SessionTranscriptTarget;
+};
+
+/** Private bundled-mirror context backed by transcript identity indexes. */
+export type SessionTranscriptMirrorWriteLockContext = SessionTranscriptWriteLockContext & {
+  appendMessageWithMessageCount: <TMessage>(
+    options: Omit<TranscriptMessageAppendOptions<TMessage>, "config">,
+  ) => Promise<{
+    messageCount: number;
+    result: TranscriptMessageAppendResult<TMessage> | undefined;
+  }>;
+  readMessageFacts: (params: { idempotencyKeys: readonly string[] }) => Promise<{
+    existingIdempotencyKeys: Set<string>;
+    messagesByIdempotencyKey: Map<string, AgentMessage>;
+  }>;
 };
 
 type SessionTranscriptMirrorAppendResult =
@@ -445,6 +460,46 @@ export async function withSessionTranscriptWriteLock<T>(
   params: SessionTranscriptWriteLockParams,
   run: (context: SessionTranscriptWriteLockContext) => Promise<T> | T,
 ): Promise<T> {
+  return await withProjectedSessionTranscriptWriteLock(params, run, (context) => context);
+}
+
+/** Runs bundled transcript-mirror work without publishing a package SDK contract. */
+export async function withSessionTranscriptMirrorWriteLock<T>(
+  params: SessionTranscriptWriteLockParams,
+  run: (context: SessionTranscriptMirrorWriteLockContext) => Promise<T> | T,
+): Promise<T> {
+  return await withProjectedSessionTranscriptWriteLock(params, run, (context, locked) => ({
+    ...context,
+    appendMessageWithMessageCount: (options) =>
+      locked.appendMessageWithMessageCount({
+        ...options,
+        ...(params.config !== undefined ? { config: params.config } : {}),
+      }),
+    readMessageFacts: async (factParams) => {
+      const facts = await locked.readMessageFacts(factParams);
+      const messagesByIdempotencyKey = new Map<string, AgentMessage>();
+      for (const [idempotencyKey, message] of facts.messagesByIdempotencyKey) {
+        if (isAgentMessageRecord(message)) {
+          messagesByIdempotencyKey.set(idempotencyKey, message);
+        }
+      }
+      return { ...facts, messagesByIdempotencyKey };
+    },
+  }));
+}
+
+/** Resolves and publishes one projected transcript write-lock context. */
+async function withProjectedSessionTranscriptWriteLock<
+  T,
+  TContext extends SessionTranscriptWriteLockContext,
+>(
+  params: SessionTranscriptWriteLockParams,
+  run: (context: TContext) => Promise<T> | T,
+  projectContext: (
+    context: SessionTranscriptWriteLockContext,
+    locked: SessionTranscriptWriteLockAccessorContext,
+  ) => TContext,
+): Promise<T> {
   const storageTarget = await resolveSessionTranscriptRuntimeTarget(params);
   const target = projectPublicTarget({
     ...storageTarget,
@@ -461,18 +516,23 @@ export async function withSessionTranscriptWriteLock<T>(
   const result = await withTranscriptWriteLock(
     boundScope,
     async (locked) =>
-      await run({
-        target,
-        readEvents: locked.readEvents,
-        appendMessage: (options) =>
-          locked.appendMessage({
-            ...options,
-            ...(params.config !== undefined ? { config: params.config } : {}),
-          }),
-        publishUpdate: async (update) => {
-          queuedUpdates.push(update ? { ...update } : undefined);
-        },
-      }),
+      await run(
+        projectContext(
+          {
+            target,
+            readEvents: locked.readEvents,
+            appendMessage: (options) =>
+              locked.appendMessage({
+                ...options,
+                ...(params.config !== undefined ? { config: params.config } : {}),
+              }),
+            publishUpdate: async (update) => {
+              queuedUpdates.push(update ? { ...update } : undefined);
+            },
+          },
+          locked,
+        ),
+      ),
   );
   for (const update of queuedUpdates) {
     await publishSessionTranscriptUpdateByIdentity({

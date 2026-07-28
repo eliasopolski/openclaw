@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendTranscriptEvent,
@@ -9,7 +10,12 @@ import {
   replaceTranscriptEvents,
   upsertSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import {
+  resolveSqliteTranscriptScope,
+  toDatabaseOptions,
+} from "../config/sessions/session-accessor.sqlite-scope.js";
 import * as transcriptEvents from "../sessions/transcript-events.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import {
   appendAssistantMirrorMessageByIdentity,
   appendSessionTranscriptMessageByIdentity,
@@ -25,6 +31,7 @@ import {
   resolveSessionTranscriptIdentity,
   resolveSessionTranscriptTarget,
   resolveSessionTranscriptMemoryHitKeyToSessionKeys,
+  withSessionTranscriptMirrorWriteLock,
   withSessionTranscriptWriteLock,
 } from "./session-transcript-runtime.js";
 
@@ -739,6 +746,8 @@ describe("session transcript runtime SDK", () => {
 
     const target = await withSessionTranscriptWriteLock(scope, async (locked) => {
       expect(await locked.readEvents()).toEqual([]);
+      expect(locked).not.toHaveProperty("appendMessageWithMessageCount");
+      expect(locked).not.toHaveProperty("readMessageFacts");
       await locked.appendMessage({
         message: {
           role: "assistant",
@@ -758,6 +767,75 @@ describe("session transcript runtime SDK", () => {
       expect.objectContaining({ type: "session" }),
       expect.objectContaining({ message: expect.objectContaining({ role: "assistant" }) }),
     ]);
+  });
+
+  it("keeps indexed mirror facts private and rechecks idempotency at append time", async () => {
+    const scope = {
+      agentId: "main",
+      sessionId: "indexed-mirror-session",
+      sessionKey: "agent:main:indexed-mirror",
+      storePath,
+    };
+    await upsertSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+
+    await withSessionTranscriptMirrorWriteLock(scope, async (locked) => {
+      expect(await locked.readMessageFacts({ idempotencyKeys: ["mirror-user"] })).toEqual({
+        existingIdempotencyKeys: new Set(),
+        messagesByIdempotencyKey: new Map(),
+      });
+      const first = await locked.appendMessageWithMessageCount({
+        idempotencyLookup: "scan",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "persist once" }],
+          idempotencyKey: "mirror-user",
+          timestamp: 1,
+        },
+      });
+      expect(first).toMatchObject({
+        messageCount: 1,
+        result: { appended: true, message: { role: "user" } },
+      });
+      expect(await locked.readMessageFacts({ idempotencyKeys: ["mirror-user"] })).toMatchObject({
+        existingIdempotencyKeys: new Set(["mirror-user"]),
+        messagesByIdempotencyKey: new Map([
+          ["mirror-user", expect.objectContaining({ role: "user" })],
+        ]),
+      });
+      const replay = await locked.appendMessageWithMessageCount({
+        idempotencyLookup: "scan",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "must not replace persisted payload" }],
+          idempotencyKey: "mirror-user",
+          timestamp: 2,
+        },
+      });
+      expect(replay).toMatchObject({
+        messageCount: 1,
+        result: {
+          appended: false,
+          message: { content: [{ text: "persist once", type: "text" }], role: "user" },
+        },
+      });
+    });
+
+    const resolvedScope = resolveSqliteTranscriptScope(scope);
+    const database = openOpenClawAgentDatabase(toDatabaseOptions(resolvedScope));
+    const external = new DatabaseSync(database.path);
+    external
+      .prepare("UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?")
+      .run(scope.sessionId);
+    external.close();
+
+    await withSessionTranscriptMirrorWriteLock(scope, async (locked) => {
+      expect(await locked.readMessageFacts({ idempotencyKeys: ["mirror-user"] })).toMatchObject({
+        existingIdempotencyKeys: new Set(["mirror-user"]),
+        messagesByIdempotencyKey: new Map([
+          ["mirror-user", expect.objectContaining({ role: "user" })],
+        ]),
+      });
+    });
   });
 
   it("serializes caller-checked idempotency inside scoped locked appends", async () => {

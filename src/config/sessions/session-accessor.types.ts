@@ -328,6 +328,18 @@ export type SessionTranscriptWriteLockAccessorContext = {
   appendMessage: <TMessage>(
     options: TranscriptMessageAppendOptions<TMessage>,
   ) => Promise<TranscriptMessageAppendResult<TMessage> | undefined>;
+  /** Appends with commit-time idempotency and returns the authoritative message count. */
+  appendMessageWithMessageCount: <TMessage>(
+    options: TranscriptMessageAppendOptions<TMessage>,
+  ) => Promise<{
+    messageCount: number;
+    result: TranscriptMessageAppendResult<TMessage> | undefined;
+  }>;
+  /** Reads bounded indexed facts for supplied transcript mirror identities. */
+  readMessageFacts: (params: { idempotencyKeys: readonly string[] }) => Promise<{
+    existingIdempotencyKeys: Set<string>;
+    messagesByIdempotencyKey: Map<string, unknown>;
+  }>;
   readEvents: () => Promise<TranscriptEvent[]>;
   replaceEvents: (events: readonly TranscriptEvent[]) => Promise<void>;
 };
