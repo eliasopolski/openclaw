@@ -909,7 +909,7 @@ export class SystemAgentChatEngine {
       this.clearPendingProposals();
       if (this.opts.surface === "gateway") {
         return {
-          text: "Setup has its own screens here — open Settings to change your model or connect a channel. On the machine running OpenClaw, `openclaw onboard` does the same job.",
+          text: "Open Settings to change your model or connect a channel. On the machine running OpenClaw, `openclaw onboard` does the same job.",
           action: "none",
         };
       }
@@ -1127,7 +1127,7 @@ export class SystemAgentChatEngine {
     }
     return [
       "No usable inference route is configured, so OpenClaw cannot continue.",
-      "Connecting a model happens on the machine running OpenClaw: `openclaw onboard` there saves only a route that passes a live test.",
+      "Run `openclaw onboard` on the machine running OpenClaw; it saves only a route that passes a live test.",
     ].join("\n");
   }
 
@@ -1158,7 +1158,7 @@ export class SystemAgentChatEngine {
     return {
       text: [
         "Changing provider credentials would replace the inference route powering this session.",
-        "That happens on the machine running OpenClaw, with `openclaw onboard`: it stages credentials, live-tests the new route, and saves only a passing setup. OpenClaw has to start again afterward.",
+        "Run `openclaw onboard` on the machine running OpenClaw: it stages credentials, live-tests the new route, and saves only a passing setup. OpenClaw restarts afterward.",
       ].join("\n"),
       action: "none",
     };
