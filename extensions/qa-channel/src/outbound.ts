@@ -4,8 +4,16 @@ import { resolveQaChannelAccount } from "./accounts.js";
 import { buildQaTarget, resolveQaTargetThread, sendQaBusMessage } from "./bus-client.js";
 import type { CoreConfig } from "./types.js";
 
-function qaMediaKind(mediaUrl: string): "image" | "video" | "audio" | "file" {
-  const extension = path.extname(mediaUrl).toLowerCase();
+function qaMediaPathname(mediaUrl: string): string {
+  try {
+    return new URL(mediaUrl).pathname;
+  } catch {
+    return mediaUrl.split(/[?#]/u, 1)[0] ?? mediaUrl;
+  }
+}
+
+function qaMediaKind(mediaPathname: string): "image" | "video" | "audio" | "file" {
+  const extension = path.extname(mediaPathname).toLowerCase();
   if ([".gif", ".jpeg", ".jpg", ".png", ".webp"].includes(extension)) {
     return "image";
   }
@@ -71,7 +79,8 @@ export async function sendQaChannelMedia(params: {
   const account = resolveQaChannelAccount({ cfg: params.cfg, accountId: params.accountId });
   const resolved = resolveQaTargetThread({ target: params.to, threadId: params.threadId });
   const parsed = resolved.target;
-  const kind = qaMediaKind(params.mediaUrl);
+  const mediaPathname = qaMediaPathname(params.mediaUrl);
+  const kind = qaMediaKind(mediaPathname);
   const { message } = await sendQaBusMessage({
     baseUrl: account.baseUrl,
     accountId: account.accountId,
@@ -90,7 +99,7 @@ export async function sendQaChannelMedia(params: {
         id: params.mediaUrl,
         kind,
         mimeType: qaMediaMimeType(kind),
-        fileName: path.basename(params.mediaUrl),
+        fileName: path.basename(mediaPathname) || "attachment",
         url: params.mediaUrl,
       },
     ],
