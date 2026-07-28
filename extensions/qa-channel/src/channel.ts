@@ -18,7 +18,7 @@ import {
 import { qaChannelMessageActions } from "./channel-actions.js";
 import { createQaChannelPluginBase, QA_CHANNEL_ID, qaChannelRuntimeMeta } from "./channel-base.js";
 import { startQaGatewayAccount } from "./gateway.js";
-import { sendQaChannelText } from "./outbound.js";
+import { sendQaChannelMedia, sendQaChannelText } from "./outbound.js";
 import type { ChannelPlugin } from "./runtime-api.js";
 import { qaChannelStatus } from "./status.js";
 import type { CoreConfig, ResolvedQaChannelAccount } from "./types.js";
@@ -147,6 +147,16 @@ export const qaChannelPlugin: ChannelPlugin<ResolvedQaChannelAccount> = createCh
           accountId,
           to,
           text,
+          threadId,
+          replyToId,
+        }),
+      sendMedia: async ({ cfg, to, text, mediaUrl, accountId, threadId, replyToId }) =>
+        await sendQaChannelMedia({
+          cfg: cfg as CoreConfig,
+          accountId,
+          to,
+          text,
+          mediaUrl: mediaUrl ?? "",
           threadId,
           replyToId,
         }),

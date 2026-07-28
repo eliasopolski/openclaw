@@ -36,8 +36,8 @@ import {
   extractLatestToolOutput,
   extractAllUserTexts,
   extractAllRequestTexts,
-  extractCompletedImageGenerationMediaPath,
   hasCompletedWriteToolResult,
+  extractCompletedImageGenerationEvent,
   hasSuccessfulWriteToolOutput,
   extractLatestImageUserTurn,
   extractToolOutputCallId,
@@ -96,13 +96,22 @@ export function buildAssistantText(
     !Array.isArray(toolJson.details)
       ? readFirstMediaPath((toolJson.details as { media?: unknown }).media)
       : "";
-  const completedImageMediaPath = extractCompletedImageGenerationMediaPath(input);
+  const completedImageEvent = extractCompletedImageGenerationEvent(input);
   const completionCallId = extractToolOutputCallId(input);
-  const hasPendingImageCall = Boolean(
-    completionCallId && scenarioState.pendingImageGenerationCallIds.has(completionCallId),
-  );
+  const pendingImageCallId =
+    (completionCallId && scenarioState.pendingImageGenerationCalls.has(completionCallId)
+      ? completionCallId
+      : undefined) ??
+    (completedImageEvent
+      ? [...scenarioState.pendingImageGenerationCalls.entries()].find(
+          ([, prompt]) => prompt === completedImageEvent.taskLabel,
+        )?.[0]
+      : undefined);
+  const hasPendingImageCall = Boolean(pendingImageCallId);
   const trustedToolMediaPath = hasPendingImageCall ? mediaPath : "";
-  const trustedCompletedImageMediaPath = hasPendingImageCall ? completedImageMediaPath : "";
+  const trustedCompletedImageMediaPath = hasPendingImageCall
+    ? (completedImageEvent?.mediaPath ?? "")
+    : "";
   const promptExactReplyDirective = extractExactReplyDirective(prompt);
   const promptExactMarkerDirective = extractExactMarkerDirective(prompt);
   const allUserText = userTexts.join("\n");
@@ -265,8 +274,8 @@ export function buildAssistantText(
     QA_IMAGE_GENERATION_PROMPT_RE.test(allInputText) &&
     (trustedToolMediaPath || trustedCompletedImageMediaPath)
   ) {
-    if (completionCallId) {
-      scenarioState.pendingImageGenerationCallIds.delete(completionCallId);
+    if (pendingImageCallId) {
+      scenarioState.pendingImageGenerationCalls.delete(pendingImageCallId);
     }
     return `Protocol note: generated the QA lighthouse image successfully.\nMEDIA:${trustedToolMediaPath || trustedCompletedImageMediaPath}`;
   }
