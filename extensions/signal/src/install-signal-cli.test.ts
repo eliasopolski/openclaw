@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { gzipSync } from "node:zlib";
 import JSZip from "jszip";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import * as tar from "tar";
@@ -10,11 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReleaseAsset } from "./install-signal-cli.js";
 
 const {
+  extractArchiveMock,
   fetchWithSsrFGuardMock,
   resolveBrewExecutableMock,
   runPluginCommandWithTimeoutMock,
   tempDownloadPaths,
 } = vi.hoisted(() => ({
+  extractArchiveMock: vi.fn(),
   fetchWithSsrFGuardMock: vi.fn(),
   resolveBrewExecutableMock: vi.fn(),
   runPluginCommandWithTimeoutMock: vi.fn(),
@@ -27,8 +28,10 @@ vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
 
 vi.mock("openclaw/plugin-sdk/setup-tools", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/setup-tools")>();
+  extractArchiveMock.mockImplementation(actual.extractArchive);
   return {
     ...actual,
+    extractArchive: extractArchiveMock,
     resolveBrewExecutable: resolveBrewExecutableMock,
   };
 });
@@ -119,6 +122,7 @@ function setProcessPlatform(platform: NodeJS.Platform, arch: string) {
 }
 
 beforeEach(() => {
+  extractArchiveMock.mockClear();
   fetchWithSsrFGuardMock.mockReset();
   resolveBrewExecutableMock.mockReset();
   runPluginCommandWithTimeoutMock.mockReset();
@@ -665,25 +669,22 @@ describe("extractSignalCliArchive", () => {
     });
   });
 
-  it("rejects native entries beyond the Signal-specific extraction limit", async () => {
-    await withArchiveWorkspace(async (workDir) => {
-      const archivePath = path.join(workDir, "oversized.tgz");
-      const extractDir = path.join(workDir, "extract");
-      const headerBlock = Buffer.alloc(512);
-      const header = new tar.Header({
-        path: "signal-cli",
-        type: "File",
-        mode: 0o755,
-        size: MAX_SIGNAL_CLI_EXTRACTED_BYTES + 1,
-      });
-      header.encode(headerBlock);
-      await fs.writeFile(archivePath, gzipSync(Buffer.concat([headerBlock, Buffer.alloc(1024)])));
-      await fs.mkdir(extractDir, { recursive: true });
+  it("passes the Signal-specific extraction limits to the strict archive parser", async () => {
+    extractArchiveMock.mockResolvedValueOnce(undefined);
 
-      await expect(extractSignalCliArchive(archivePath, extractDir, 5_000)).rejects.toThrow(
-        "archive entry extracted size exceeds limit",
-      );
-      await expectPathMissing(path.join(extractDir, "signal-cli"));
-    });
+    await extractSignalCliArchive("/tmp/signal-cli.tgz", "/tmp/signal-cli-extract", 5_000);
+
+    expect(extractArchiveMock).toHaveBeenCalledOnce();
+    expect(extractArchiveMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        archivePath: "/tmp/signal-cli.tgz",
+        destDir: "/tmp/signal-cli-extract",
+        timeoutMs: 5_000,
+        limits: expect.objectContaining({
+          maxEntryBytes: MAX_SIGNAL_CLI_EXTRACTED_BYTES,
+          maxExtractedBytes: MAX_SIGNAL_CLI_EXTRACTED_BYTES,
+        }),
+      }),
+    );
   });
 });
