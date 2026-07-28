@@ -9,6 +9,7 @@ export const agentsCoreIsolatedTestFiles = [
   "src/agents/mcp-http-fetch.test.ts",
   "src/agents/mcp-transport.test.ts",
   "src/agents/model-auth-env.provider-aliases.test.ts",
+  "src/agents/model-catalog-visibility.test.ts",
   "src/agents/model-selection.plugin-runtime.test.ts",
   "src/agents/models-config.runtime-source-snapshot.test.ts",
   "src/agents/subagent-orphan-recovery.test.ts",
