@@ -1188,6 +1188,13 @@ async function buildResponsesPayload(
     return buildToolCallEventsWithArgs("read", { path: "QA_KICKOFF_TASK.md" });
   }
   if (/repo contract followthrough check/i.test(allInputText)) {
+    const buildRepoContractToolCall = (name: "read" | "write", args: Record<string, unknown>) =>
+      hasDeclaredTool(body, "exec") && !hasDeclaredTool(body, name)
+        ? buildToolCallEventsWithArgs("exec", {
+            language: "javascript",
+            code: `return await tools.callValue(${JSON.stringify(`openclaw:core:${name}`)}, ${JSON.stringify(args)});`,
+          })
+        : buildToolCallEventsWithArgs(name, args);
     const repoEvidenceText = [
       extractAllToolOutputText(input),
       extractUserTextAfterLatestToolOutput(input),
@@ -1204,13 +1211,13 @@ async function buildResponsesPayload(
       );
     }
     if (!repoEvidenceText) {
-      return buildToolCallEventsWithArgs("read", { path: "AGENT.md" });
+      return buildRepoContractToolCall("read", { path: "AGENT.md" });
     }
     if (
       repoEvidenceText.includes("Mission: prove you followed the repo contract.") &&
       repoEvidenceText.includes("Evidence path: AGENT.md -> SOUL.md -> FOLLOWTHROUGH_INPUT.md")
     ) {
-      return buildToolCallEventsWithArgs("write", {
+      return buildRepoContractToolCall("write", {
         path: "repo-contract-summary.txt",
         content: [
           "Mission: prove you followed the repo contract.",
@@ -1220,10 +1227,10 @@ async function buildResponsesPayload(
       });
     }
     if (repoEvidenceText.includes("# Execution style")) {
-      return buildToolCallEventsWithArgs("read", { path: "FOLLOWTHROUGH_INPUT.md" });
+      return buildRepoContractToolCall("read", { path: "FOLLOWTHROUGH_INPUT.md" });
     }
     if (repoEvidenceText.includes("# Repo contract")) {
-      return buildToolCallEventsWithArgs("read", { path: "SOUL.md" });
+      return buildRepoContractToolCall("read", { path: "SOUL.md" });
     }
   }
   if (/personal task followthrough check/i.test(allInputText)) {
