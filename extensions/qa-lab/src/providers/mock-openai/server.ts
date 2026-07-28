@@ -136,6 +136,7 @@ import {
   extractAllInputTexts,
   extractInstructionsText,
   extractAllRequestTexts,
+  extractCompletedImageGenerationMediaPath,
   buildWhatsAppPendingHistoryReply,
   buildWhatsAppBroadcastReply,
   buildWhatsAppGroupDispatchReply,
@@ -1127,12 +1128,23 @@ async function buildResponsesPayload(
       });
     }
   }
-  if (QA_IMAGE_GENERATION_PROMPT_RE.test(allInputText) && !toolOutput) {
-    return buildToolCallEventsWithArgs("image_generate", {
+  if (
+    QA_IMAGE_GENERATION_PROMPT_RE.test(allInputText) &&
+    !toolOutput &&
+    (!input.some((item) => item.type === "function_call" && item.name === "image_generate") ||
+      (QA_IMAGE_GENERATION_PROMPT_RE.test(prompt) &&
+        !extractCompletedImageGenerationMediaPath(input)))
+  ) {
+    const events = buildToolCallEventsWithArgs("image_generate", {
       prompt: "A QA lighthouse on a dark sea with a tiny protocol droid silhouette.",
       filename: "qa-lighthouse.png",
       size: "1024x1024",
     });
+    const callId = extractPlannedToolCallId(events);
+    if (callId) {
+      scenarioState.pendingImageGenerationCallIds.add(callId);
+    }
+    return events;
   }
   if (canCallSessionsSpawn && /subagent fanout synthesis check/i.test(allInputText)) {
     const fanoutNamespace = resolveSubagentFanoutPhaseNamespace(allInputText);
@@ -1307,6 +1319,7 @@ export async function startQaMockOpenAiServer(params?: {
   const finalOnlyMarkerPauseMs = params?.finalOnlyMarkerPauseMs ?? 1_500;
   const scenarioState: MockScenarioState = {
     anthropicThinkingErrorPhase: 0,
+    pendingImageGenerationCallIds: new Set(),
     // A suite process reuses this server across isolated scenarios. Session-keyed
     // phases let a retry replay both spawns without corrupting an in-flight peer.
     subagentFanoutPhaseByNamespace: new Map(),
