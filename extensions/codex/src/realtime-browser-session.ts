@@ -8,7 +8,10 @@ import type {
   RealtimeVoiceBrowserSessionCreateRequest,
   RealtimeVoiceProviderCapabilities,
 } from "openclaw/plugin-sdk/realtime-voice";
-import { readRequestBodyWithLimit } from "openclaw/plugin-sdk/webhook-request-guards";
+import {
+  readRequestBodyWithLimit,
+  resolveAcceptedBrowserOrigin,
+} from "openclaw/plugin-sdk/webhook-request-guards";
 import {
   CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
   unsubscribeCodexThreadBestEffort,
@@ -109,33 +112,6 @@ function respondText(res: ServerResponse, statusCode: number, body: string): voi
   res.end(body);
 }
 
-function resolveConfiguredControlUiOrigin(
-  req: IncomingMessage,
-  cfg: OpenClawConfig | undefined,
-): string | undefined {
-  const rawOrigin = typeof req.headers.origin === "string" ? req.headers.origin.trim() : "";
-  if (!rawOrigin) {
-    return undefined;
-  }
-  let origin: string;
-  try {
-    const parsed = new URL(rawOrigin);
-    if (parsed.origin !== rawOrigin || parsed.username || parsed.password) {
-      return undefined;
-    }
-    origin = parsed.origin;
-  } catch {
-    return undefined;
-  }
-  const allowed = cfg?.gateway?.controlUi?.allowedOrigins ?? [];
-  return allowed.some((candidate) => {
-    const normalized = candidate.trim().toLowerCase();
-    return normalized === "*" || normalized === origin;
-  })
-    ? origin
-    : undefined;
-}
-
 function applyRealtimeOfferCorsHeaders(
   req: IncomingMessage,
   res: ServerResponse,
@@ -144,7 +120,7 @@ function applyRealtimeOfferCorsHeaders(
   if (!req.headers.origin) {
     return true;
   }
-  const origin = resolveConfiguredControlUiOrigin(req, cfg);
+  const origin = resolveAcceptedBrowserOrigin({ req, cfg });
   if (!origin) {
     return false;
   }
@@ -445,6 +421,10 @@ export function createCodexRealtimeBrowserSessionBroker(params: {
       }
       res.setHeader("Access-Control-Max-Age", "600");
       res.end();
+      return true;
+    }
+    if (!corsAllowed) {
+      respondText(res, 403, "Origin not allowed");
       return true;
     }
     if (req.method !== "POST") {

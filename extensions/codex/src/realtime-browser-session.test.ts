@@ -21,22 +21,24 @@ vi.mock("./app-server/shared-client.js", () => ({
   releaseLeasedSharedCodexAppServerClient: sharedClientMocks.releaseClient,
 }));
 
-function createSdpRequest(token: string, origin?: string): IncomingMessage {
+function createSdpRequest(token: string, origin?: string, host?: string): IncomingMessage {
   return Object.assign(Readable.from(["v=offer\r\n"]), {
     method: "POST",
     headers: {
       authorization: `Bearer ${token}`,
       "content-type": "application/sdp",
       ...(origin ? { origin } : {}),
+      ...(host ? { host } : {}),
     },
   }) as unknown as IncomingMessage;
 }
 
-function createPreflightRequest(origin: string): IncomingMessage {
+function createPreflightRequest(origin: string, host?: string): IncomingMessage {
   return Object.assign(Readable.from([]), {
     method: "OPTIONS",
     headers: {
       origin,
+      ...(host ? { host } : {}),
       "access-control-request-method": "POST",
       "access-control-request-headers": "authorization,content-type",
       "access-control-request-private-network": "true",
@@ -242,12 +244,55 @@ describe("Codex OAuth realtime browser session", () => {
         "true",
       );
 
+      const privateOrigin = "http://gateway.tailnet.ts.net:18789";
+      const privatePreflight = createResponseHarness();
+      await expect(
+        realtime.handler(
+          createPreflightRequest(privateOrigin, "gateway.tailnet.ts.net:18789"),
+          privatePreflight.res,
+        ),
+      ).resolves.toBe(true);
+      expect(privatePreflight.res.statusCode).toBe(204);
+      expect(privatePreflight.setHeader).toHaveBeenCalledWith(
+        "Access-Control-Allow-Origin",
+        privateOrigin,
+      );
+
+      const privatePost = createResponseHarness();
+      await expect(
+        realtime.handler(
+          createSdpRequest("invalid", privateOrigin, "gateway.tailnet.ts.net:18789"),
+          privatePost.res,
+        ),
+      ).resolves.toBe(true);
+      expect(privatePost.res.statusCode).toBe(401);
+      expect(privatePost.setHeader).toHaveBeenCalledWith(
+        "Access-Control-Allow-Origin",
+        privateOrigin,
+      );
+
       const rejected = createResponseHarness();
       await expect(
-        realtime.handler(createPreflightRequest("https://untrusted.example"), rejected.res),
+        realtime.handler(
+          createPreflightRequest("https://untrusted.example", "gateway.tailnet.ts.net:18789"),
+          rejected.res,
+        ),
       ).resolves.toBe(true);
       expect(rejected.res.statusCode).toBe(403);
       expect(rejected.setHeader).not.toHaveBeenCalledWith(
+        "Access-Control-Allow-Origin",
+        expect.anything(),
+      );
+
+      const rejectedPost = createResponseHarness();
+      await expect(
+        realtime.handler(
+          createSdpRequest("invalid", "https://untrusted.example", "gateway.tailnet.ts.net:18789"),
+          rejectedPost.res,
+        ),
+      ).resolves.toBe(true);
+      expect(rejectedPost.res.statusCode).toBe(403);
+      expect(rejectedPost.setHeader).not.toHaveBeenCalledWith(
         "Access-Control-Allow-Origin",
         expect.anything(),
       );
