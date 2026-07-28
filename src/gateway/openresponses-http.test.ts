@@ -313,7 +313,7 @@ describe("OpenResponses HTTP API (e2e)", () => {
     };
 
     try {
-      testState.agentsConfig = { list: [{ id: "main" }, { id: "beta" }] };
+      testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "beta" }] };
       resetConfigRuntimeState();
 
       const resNonPost = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
@@ -325,7 +325,10 @@ describe("OpenResponses HTTP API (e2e)", () => {
 
       const resMissingAuth = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-openclaw-agent-id": "main",
+        },
         body: JSON.stringify({ model: "openclaw", input: "hi" }),
       });
       expect(resMissingAuth.status).toBe(200);
@@ -340,7 +343,11 @@ describe("OpenResponses HTTP API (e2e)", () => {
       await ensureResponseConsumed(resMissingModel);
 
       agentCommand.mockClear();
-      const resInvalidModel = await postResponses(port, { model: "openai/", input: "hi" });
+      const resInvalidModel = await postResponses(
+        port,
+        { model: "openai/", input: "hi" },
+        { "x-openclaw-agent-id": "main" },
+      );
       expect(resInvalidModel.status).toBe(400);
       const invalidModelJson = (await resInvalidModel.json()) as {
         error?: { type?: string; message?: string };
@@ -387,7 +394,10 @@ describe("OpenResponses HTTP API (e2e)", () => {
       const resReservedSessionOverride = await postResponses(
         port,
         { model: "openclaw", input: "hi" },
-        { "x-openclaw-session-key": "agent:main:subagent:spoofed" },
+        {
+          "x-openclaw-agent-id": "main",
+          "x-openclaw-session-key": "agent:main:subagent:spoofed",
+        },
       );
       expect(resReservedSessionOverride.status).toBe(400);
       const reservedSessionJson = (await resReservedSessionOverride.json()) as {
@@ -403,6 +413,7 @@ describe("OpenResponses HTTP API (e2e)", () => {
         port,
         { model: "openclaw", input: "hi" },
         {
+          "x-openclaw-agent-id": "main",
           "x-openclaw-session-key": "agent:main:harness:codex:supervision:spoofed-native-thread",
         },
       );
@@ -426,7 +437,11 @@ describe("OpenResponses HTTP API (e2e)", () => {
       await ensureResponseConsumed(resModel);
 
       mockAgentOnce([{ text: "hello" }]);
-      const resDefaultAlias = await postResponses(port, { model: "openclaw/default", input: "hi" });
+      const resDefaultAlias = await postResponses(
+        port,
+        { model: "openclaw/default", input: "hi" },
+        { "x-openclaw-agent-id": "main" },
+      );
       expect(resDefaultAlias.status).toBe(200);
       const optsDefaultAlias = firstAgentOpts();
       expect((optsDefaultAlias as { sessionKey?: string } | undefined)?.sessionKey ?? "").toMatch(
@@ -457,6 +472,9 @@ describe("OpenResponses HTTP API (e2e)", () => {
         expect(json.error?.message).toBe("Unknown agent 'missing-agent'.");
         expect(agentCommand).toHaveBeenCalledTimes(0);
       }
+
+      testState.agentsConfig = { list: [{ id: "main" }] };
+      resetConfigRuntimeState();
 
       mockAgentOnce([{ text: "hello" }]);
       const resChannelHeader = await postResponses(
